@@ -1,0 +1,21 @@
+# Dépendances & builds
+node_modules/
+dist/
+build/
+out/
+
+# Données sectorielles et captures (JAMAIS versionnées — contrainte projet)
+*.xlsx
+*.har
+
+# Secrets / identifiants (ne doivent jamais être commités en clair)
+.env
+.env.*
+*.pem
+*.key
+
+# OS / éditeur
+.DS_Store
+*.log
+
+# NB : package-lock.json EST versionné (requis par `npm ci` en CI).

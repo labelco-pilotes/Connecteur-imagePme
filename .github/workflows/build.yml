@@ -1,0 +1,78 @@
+# Construit l'installeur Windows (.exe) + le feed de mise à jour (latest.yml), puis le dépose sur
+# le VPS (provider electron-updater "generic"). Déclenché par un tag `vX.Y.Z` ou manuellement.
+#
+# Deux étages :
+#   1) build-windows : fabrique le .exe + latest.yml + .blockmap, et les publie en ARTEFACT
+#      téléchargeable (fonctionne sans aucun secret → tu peux récupérer le .exe tout de suite).
+#   2) deploy-vps : dépose ces fichiers sur ton VPS par SSH, UNIQUEMENT si les secrets VPS_* sont
+#      configurés (sinon l'étape est sautée → tu déposes les fichiers à la main la 1re fois).
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {} # bouton « Run workflow » dans l'onglet Actions (test manuel)
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      # Pas de --publish (le provider "generic" ne téléverse pas) : on construit le .exe ET le
+      # latest.yml ; le dépôt sur le VPS est fait à l'étape suivante.
+      - name: Build Windows x64
+        run: npx --no-install electron-builder --win --x64 --publish never
+
+      - name: Publier l'artefact (téléchargeable depuis l'onglet Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/*.exe
+            dist/latest.yml
+            dist/*.blockmap
+          if-no-files-found: error
+
+  deploy-vps:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    # Les secrets sont copiés en env du job pour pouvoir conditionner les étapes dessus.
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PATH: ${{ secrets.VPS_PATH }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+    steps:
+      - name: Récupérer les fichiers du build
+        if: ${{ env.VPS_HOST != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist
+
+      - name: Déposer sur le VPS (rsync over SSH)
+        if: ${{ env.VPS_HOST != '' }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          rsync -avz -e "ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes" \
+            --include='latest.yml' --include='*.exe' --include='*.blockmap' --exclude='*' \
+            dist/ "$VPS_USER@$VPS_HOST:$VPS_PATH/"
+
+      - name: Rappel si le déploiement est sauté
+        if: ${{ env.VPS_HOST == '' }}
+        run: echo "Secrets VPS_* absents → dépôt auto sauté. Télécharge l'artefact 'windows-installer' et dépose latest.yml + .exe + .blockmap sur le VPS à la main."
